@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Git Work
+Comment=A GitHub notifications applet
+Type=Application
+Icon=dev.edfloreshz.GitWork
+Exec=git-work %F
+Terminal=false
+StartupNotify=true
+Categories=COSMIC
+Keywords=COSMIC
+MimeType=
