@@ -1,6 +1,6 @@
 # Git Work
 
-A GitHub notifications applet
+A beautiful GitHub notifications applet for COSMIC Desktop that helps you stay on top of your GitHub activity. View, manage, and open notifications directly from your system panel.
 
 ## Installation
 
