@@ -2013,6 +2013,7 @@ dependencies = [
  "rust-embed",
  "serde",
  "serde_json",
+ "tokio",
  "vergen",
 ]
 
@@ -5520,6 +5521,7 @@ dependencies = [
  "io-uring",
  "libc",
  "mio",
+ "parking_lot 0.12.5",
  "pin-project-lite",
  "signal-hook-registry",
  "slab",
