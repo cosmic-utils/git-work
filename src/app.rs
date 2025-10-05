@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use crate::config::Config;
-use crate::github::GitHubService;
+use crate::github::*;
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
-use cosmic::iced::futures::SinkExt;
 use cosmic::iced::{window::Id, Alignment, Length, Limits, Subscription, Task};
 use cosmic::iced_winit::commands::popup::{destroy_popup, get_popup};
 use cosmic::prelude::*;
+use cosmic::theme::spacing;
 use cosmic::widget;
 use octocrab::models::activity::Notification;
 use octocrab::models::NotificationId;
-use std::time::Duration;
+use octocrab::Octocrab;
 
 /// The application model stores app-specific state used to describe its interface and
 /// drive its logic.
@@ -23,7 +23,7 @@ pub struct AppModel {
     /// Configuration data that persists between application runs.
     config: Config,
     /// GitHub service for API interactions
-    github_service: Option<GitHubService>,
+    client: Option<Octocrab>,
     /// Current notifications
     notifications: Vec<Notification>,
     /// Loading state
@@ -50,7 +50,6 @@ pub enum Message {
     MarkAllAsRead,
     NotificationMarkedAsRead(Result<(), String>),
     ToggleShowAll(bool),
-    AutoRefresh,
     UpdateConfig(Config),
 }
 
@@ -81,15 +80,22 @@ impl cosmic::Application for AppModel {
         core: cosmic::Core,
         _flags: Self::Flags,
     ) -> (Self, Task<cosmic::Action<Self::Message>>) {
-        let github_service = match GitHubService::new() {
-            Ok(service) => Some(service),
-            Err(_) => None,
+        let client = || -> Result<Octocrab, Box<dyn std::error::Error>> {
+            let token = std::env::var("GITHUB_TOKEN")
+                .map_err(|_|
+                    "GITHUB_TOKEN environment variable not found. Please set your GitHub personal access token."
+                )?;
+
+            let client = octocrab::OctocrabBuilder::new()
+                .personal_token(token)
+                .build()?;
+            Ok(client)
         };
 
         // Construct the app model with the runtime's core.
         let mut app = AppModel {
             core,
-            github_service,
+            client: client().ok(),
             config: cosmic_config::Config::new(Self::APP_ID, Config::VERSION)
                 .map(|context| match Config::get_entry(&context) {
                     Ok(config) => config,
@@ -99,7 +105,7 @@ impl cosmic::Application for AppModel {
             ..Default::default()
         };
 
-        let task = if app.github_service.is_some() {
+        let task = if app.client.is_some() {
             app.is_loading = true;
             Task::perform(async {}, |_| {
                 cosmic::Action::App(Message::RefreshNotifications)
@@ -138,17 +144,22 @@ impl cosmic::Application for AppModel {
 
     fn view_window(&self, _id: Id) -> Element<'_, Self::Message> {
         let header = widget::row()
-            .push(widget::text("GitHub Notifications").size(18))
+            .push(widget::text("GitHub Notifications").size(spacing().space_s))
             .push(widget::horizontal_space().width(Length::Fill))
-            .push(if self.is_loading {
+            .push(
+                widget::button::icon(widget::icon::from_name("checkbox-checked-symbolic"))
+                    .tooltip("Mark all read")
+                    .padding([spacing().space_xxxs, spacing().space_xxs])
+                    .on_press_maybe(
+                        (!self.notifications.is_empty()).then_some(Message::MarkAllAsRead),
+                    ),
+            )
+            .push(
                 widget::button::icon(cosmic::widget::icon::from_name("view-refresh-symbolic"))
-                    .padding(8)
-            } else {
-                widget::button::icon(cosmic::widget::icon::from_name("view-refresh-symbolic"))
-                    .padding(8)
-                    .on_press(Message::RefreshNotifications)
-            })
-            .spacing(8)
+                    .padding(spacing().space_xxs)
+                    .on_press_maybe((!self.is_loading).then_some(Message::RefreshNotifications)),
+            )
+            .spacing(spacing().space_xxs)
             .align_y(Alignment::Center);
 
         let content = if let Some(error) = &self.error_message {
@@ -157,99 +168,105 @@ impl cosmic::Application for AppModel {
                 .push(
                     widget::container(
                         widget::column()
-                            .push(widget::text("Error").size(16))
-                            .push(widget::text(error).size(14))
+                            .push(widget::text("Error").size(spacing().space_s))
+                            .push(widget::text(error).size(spacing().space_xs))
                             .push(if error.contains("GITHUB_TOKEN") {
                                 widget::column()
-                                    .push(widget::text("To fix this:").size(14))
+                                    .push(widget::text("To fix this:").size(spacing().space_xs))
                                     .push(
                                         widget::text("1. Create a Personal Access Token on GitHub")
-                                            .size(12),
+                                            .size(spacing().space_xs),
                                     )
                                     .push(
                                         widget::text("2. Set GITHUB_TOKEN environment variable")
-                                            .size(12),
+                                            .size(spacing().space_xs),
                                     )
-                                    .push(widget::text("3. Restart the applet").size(12))
-                                    .spacing(4)
+                                    .push(
+                                        widget::text("3. Restart the applet")
+                                            .size(spacing().space_xs),
+                                    )
+                                    .spacing(spacing().space_xxxs)
                             } else {
                                 widget::column()
                             })
-                            .spacing(8),
+                            .width(Length::Fill)
+                            .spacing(spacing().space_xxs),
                     )
-                    .padding(16)
+                    .padding(spacing().space_s)
                     .class(cosmic::theme::Container::Card),
                 )
-                .spacing(12)
+                .spacing(spacing().space_xs)
         } else if self.is_loading {
             widget::column()
                 .push(header)
                 .push(
                     widget::container(
                         widget::row()
-                            .push(widget::text("Loading notifications...").size(14))
+                            .push(widget::text("Loading notifications...").size(spacing().space_xs))
                             .push(widget::horizontal_space().width(Length::Fill))
                             .align_y(Alignment::Center),
                     )
-                    .padding(16)
+                    .padding(spacing().space_s)
                     .class(cosmic::theme::Container::Card),
                 )
-                .spacing(12)
+                .spacing(spacing().space_xs)
         } else if self.notifications.is_empty() {
             widget::column()
                 .push(header)
                 .push(
                     widget::container(
                         widget::column()
-                            .push(widget::text("🎉 All caught up!").size(16))
-                            .push(widget::text("No new notifications").size(14))
-                            .spacing(8)
-                            .align_x(Alignment::Center),
+                            .push(widget::text("🎉 All caught up!").size(spacing().space_s))
+                            .push(widget::text("No new notifications").size(spacing().space_xs))
+                            .spacing(spacing().space_xxs)
+                            .align_x(Alignment::Center)
+                            .width(Length::Fill),
                     )
-                    .padding(32)
+                    .padding(spacing().space_l)
                     .class(cosmic::theme::Container::Card),
                 )
-                .spacing(12)
+                .spacing(spacing().space_xs)
         } else {
             let controls = widget::row()
-                .push(widget::text(format!("{} notifications", self.notifications.len())).size(12))
+                .push(
+                    widget::text(format!("{} notifications", self.notifications.len()))
+                        .size(spacing().space_xs),
+                )
                 .push(widget::horizontal_space().width(Length::Fill))
                 .push(
                     widget::toggler(self.show_all)
                         .label("Show all")
+                        .spacing(spacing().space_xxs)
                         .on_toggle(Message::ToggleShowAll),
                 )
-                .push(
-                    widget::button::text("Mark all read")
-                        .padding([4, 8])
-                        .on_press(Message::MarkAllAsRead),
-                )
-                .spacing(8)
-                .align_y(Alignment::Center);
+                .align_y(Alignment::Center)
+                .spacing(spacing().space_xxs)
+                .apply(widget::container)
+                .class(cosmic::style::Container::Card)
+                .padding(spacing().space_xxs);
 
-            let mut notifications_list = widget::column();
+            let mut notifications_list = widget::column().spacing(spacing().space_xxxs);
             for notification in &self.notifications {
-                if self.show_all || notification.unread {
-                    notifications_list =
-                        notifications_list.push(self.notification_item(notification));
-                }
+                notifications_list = notifications_list.push(self.notification_item(notification));
             }
+            let notifications = widget::scrollable(
+                widget::container(notifications_list)
+                    .padding([spacing().space_none, spacing().space_xxxs]),
+            )
+            .height(Length::Fixed(400.0));
 
             widget::column()
                 .push(header)
+                .push(notifications)
                 .push(controls)
-                .push(
-                    widget::scrollable(widget::container(notifications_list).padding([0, 4]))
-                        .height(Length::Fixed(400.0)),
-                )
-                .spacing(8)
+                .spacing(spacing().space_xxs)
         };
 
         self.core
             .applet
             .popup_container(
                 widget::container(content)
-                    .padding(12)
+                    .padding(spacing().space_xs)
                     .class(cosmic::theme::Container::Dialog),
             )
             .into()
@@ -262,16 +279,6 @@ impl cosmic::Application for AppModel {
     /// beginning of the application, and persist through its lifetime.
     fn subscription(&self) -> Subscription<Self::Message> {
         Subscription::batch(vec![
-            // Auto-refresh every 30 seconds
-            Subscription::run_with_id(
-                std::any::TypeId::of::<()>(),
-                cosmic::iced::stream::channel(1, |mut output| async move {
-                    loop {
-                        tokio::time::sleep(Duration::from_secs(30)).await;
-                        let _ = output.send(Message::AutoRefresh).await;
-                    }
-                }),
-            ),
             // Watch for application configuration changes.
             self.core()
                 .watch_config::<Config>(Self::APP_ID)
@@ -281,6 +288,8 @@ impl cosmic::Application for AppModel {
 
     /// Handles messages emitted by the application and its widgets.
     fn update(&mut self, message: Self::Message) -> Task<cosmic::Action<Self::Message>> {
+        let mut tasks = vec![];
+
         match message {
             Message::UpdateConfig(config) => {
                 self.config = config;
@@ -299,10 +308,10 @@ impl cosmic::Application for AppModel {
                         None,
                     );
                     popup_settings.positioner.size_limits = Limits::NONE
-                        .max_width(450.0)
-                        .min_width(400.0)
-                        .min_height(300.0)
-                        .max_height(600.0);
+                        .max_width(1000.0)
+                        .min_width(1000.0)
+                        .min_height(1000.0)
+                        .max_height(1000.0);
                     get_popup(popup_settings)
                 }
             }
@@ -312,31 +321,26 @@ impl cosmic::Application for AppModel {
                 }
             }
             Message::RefreshNotifications => {
-                if let Some(service) = &self.github_service {
+                if let Some(client) = &self.client {
                     self.is_loading = true;
                     self.error_message = None;
-                    let service = service.clone();
+                    let all = self.show_all;
+                    let client = client.clone();
                     return Task::perform(
                         async move {
-                            service
-                                .get_notifications(false, false)
+                            client
+                                .activity()
+                                .notifications()
+                                .list()
+                                .all(all)
+                                .send()
                                 .await
+                                .map(|r| r.items)
                                 .map_err(|e| e.to_string())
                         },
                         |result| cosmic::Action::App(Message::NotificationsLoaded(result)),
                     );
                 }
-            }
-            Message::AutoRefresh => {
-                // Only auto-refresh if we haven't refreshed in the last 25 seconds
-                if let Some(last_refresh) = self.last_refresh {
-                    if last_refresh.elapsed() < Duration::from_secs(25) {
-                        return Task::none();
-                    }
-                }
-                return Task::perform(async {}, |_| {
-                    cosmic::Action::App(Message::RefreshNotifications)
-                });
             }
             Message::NotificationsLoaded(result) => {
                 self.is_loading = false;
@@ -353,19 +357,21 @@ impl cosmic::Application for AppModel {
                 }
             }
             Message::OpenNotification(notification) => {
-                if let Some(service) = &self.github_service {
-                    if let Some(url) = service.get_notification_url(&notification) {
+                if let Some(client) = &self.client {
+                    if let Some(url) = get_notification_url(&notification) {
                         let _ = open::that_detached(url);
                     }
 
                     // Mark as read if it was unread
                     if notification.unread {
                         let notification_id = notification.id.clone();
-                        let service = service.clone();
+                        let client = client.clone();
                         return Task::perform(
                             async move {
-                                service
-                                    .mark_as_read(notification_id)
+                                client
+                                    .activity()
+                                    .notifications()
+                                    .mark_as_read(notification_id.into())
                                     .await
                                     .map_err(|e| e.to_string())
                             },
@@ -375,12 +381,14 @@ impl cosmic::Application for AppModel {
                 }
             }
             Message::MarkAsRead(notification_id) => {
-                if let Some(service) = &self.github_service {
-                    let service = service.clone();
+                if let Some(client) = &self.client {
+                    let client = client.clone();
                     return Task::perform(
                         async move {
-                            service
-                                .mark_as_read(notification_id)
+                            client
+                                .activity()
+                                .notifications()
+                                .mark_as_read(notification_id.into())
                                 .await
                                 .map_err(|e| e.to_string())
                         },
@@ -389,32 +397,35 @@ impl cosmic::Application for AppModel {
                 }
             }
             Message::MarkAllAsRead => {
-                if let Some(service) = &self.github_service {
-                    let service = service.clone();
+                if let Some(client) = &self.client {
+                    let client = client.clone();
                     return Task::perform(
-                        async move { service.mark_all_as_read().await.map_err(|e| e.to_string()) },
+                        async move {
+                            client
+                                .activity()
+                                .notifications()
+                                .mark_all_as_read(None)
+                                .await
+                                .map_err(|e| e.to_string())
+                        },
                         |result| cosmic::Action::App(Message::NotificationMarkedAsRead(result)),
                     );
                 }
             }
-            Message::NotificationMarkedAsRead(result) => {
-                match result {
-                    Ok(()) => {
-                        // Refresh notifications after marking as read
-                        return Task::perform(async {}, |_| {
-                            cosmic::Action::App(Message::RefreshNotifications)
-                        });
-                    }
-                    Err(error) => {
-                        self.error_message = Some(format!("Failed to mark as read: {}", error));
-                    }
+            Message::NotificationMarkedAsRead(result) => match result {
+                Ok(()) => {
+                    tasks.push(cosmic::task::message(Message::RefreshNotifications));
                 }
-            }
+                Err(error) => {
+                    self.error_message = Some(format!("Failed to mark as read: {}", error));
+                }
+            },
             Message::ToggleShowAll(show_all) => {
                 self.show_all = show_all;
+                tasks.push(cosmic::task::message(Message::RefreshNotifications));
             }
         }
-        Task::none()
+        Task::batch(tasks)
     }
 
     fn style(&self) -> Option<cosmic::iced_runtime::Appearance> {
@@ -424,68 +435,56 @@ impl cosmic::Application for AppModel {
 
 impl AppModel {
     fn notification_item<'a>(&self, notification: &'a Notification) -> Element<'a, Message> {
-        let service = self.github_service.as_ref().unwrap();
-        let icon = service.get_notification_icon(notification);
-        let reason = service.format_reason(&notification.reason);
-
-        let unread_indicator = if notification.unread {
-            widget::container(widget::text("●").size(8))
-        } else {
-            widget::container(widget::text(""))
-        };
+        let reason = format_reason(&notification.reason);
 
         let header = widget::row()
-            .push(unread_indicator)
-            .push(
-                widget::button::icon(cosmic::widget::icon::from_name(icon))
-                    .padding(4)
-                    .class(cosmic::theme::Button::Text),
-            )
             .push(
                 widget::column()
-                    .push(widget::text(&notification.subject.title).size(14))
                     .push(
-                        widget::text(
-                            notification
-                                .repository
-                                .full_name
-                                .as_ref()
-                                .map(|name| format!("{} • {}", name, reason))
-                                .unwrap_or(reason),
-                        )
-                        .size(12),
+                        widget::button::link(notification.subject.title.clone())
+                            .padding(spacing().space_none)
+                            .on_press(Message::OpenNotification(notification.clone())),
                     )
+                    .push_maybe(
+                        notification
+                            .repository
+                            .full_name
+                            .as_ref()
+                            .map(|name| widget::text(name).size(spacing().space_xs)),
+                    )
+                    .width(250.)
                     .spacing(2),
             )
             .push(widget::horizontal_space().width(Length::Fill))
-            .push(if notification.unread {
-                widget::button::icon(cosmic::widget::icon::from_name("mail-mark-read-symbolic"))
-                    .padding(4)
+            .push_maybe(
+                notification.unread.then_some(
+                    widget::button::icon(cosmic::widget::icon::from_name(
+                        "mail-mark-read-symbolic",
+                    ))
+                    .padding(spacing().space_xxxs)
                     .on_press(Message::MarkAsRead(notification.id.clone()))
-                    .class(cosmic::theme::Button::Text)
-            } else {
-                widget::button::icon(cosmic::widget::icon::from_name("mail-read-symbolic"))
-                    .padding(4)
-                    .class(cosmic::theme::Button::Text)
-            })
+                    .class(cosmic::theme::Button::Text),
+                ),
+            )
             .spacing(8)
             .align_y(Alignment::Center);
 
         let time_ago = format_time_ago(&notification.updated_at);
-        let subject_type = notification.subject.r#type.clone();
 
         let footer = widget::row()
             .push(widget::text(time_ago).size(11))
             .push(widget::horizontal_space().width(Length::Fill))
-            .push(widget::text(subject_type).size(11));
+            .push(widget::text(reason).size(11));
 
-        widget::button::custom(
-            widget::container(widget::column().push(header).push(footer).spacing(4))
-                .padding(12)
-                .width(Length::Fill),
+        widget::container(
+            widget::column()
+                .push(header)
+                .push(footer)
+                .spacing(spacing().space_xxxs),
         )
-        .class(cosmic::theme::Button::Text)
-        .on_press(Message::OpenNotification(notification.clone()))
+        .class(cosmic::style::Container::Card)
+        .padding(spacing().space_xxs)
+        .width(Length::Fill)
         .into()
     }
 }
