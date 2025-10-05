@@ -48,7 +48,7 @@ pub enum Message {
     OpenNotification(Notification),
     MarkAsRead(NotificationId),
     MarkAllAsRead,
-    NotificationMarkedAsRead(Result<(), String>),
+    NotificationMarkedAsRead(Result<Option<NotificationId>, String>),
     ToggleShowAll(bool),
     UpdateConfig(Config),
 }
@@ -373,7 +373,8 @@ impl cosmic::Application for AppModel {
                                     .notifications()
                                     .mark_as_read(notification_id.into())
                                     .await
-                                    .map_err(|e| e.to_string())
+                                    .map_err(|e| e.to_string())?;
+                                Ok(Some(notification_id))
                             },
                             |result| cosmic::Action::App(Message::NotificationMarkedAsRead(result)),
                         );
@@ -390,7 +391,8 @@ impl cosmic::Application for AppModel {
                                 .notifications()
                                 .mark_as_read(notification_id.into())
                                 .await
-                                .map_err(|e| e.to_string())
+                                .map_err(|e| e.to_string())?;
+                            Ok(Some(notification_id))
                         },
                         |result| cosmic::Action::App(Message::NotificationMarkedAsRead(result)),
                     );
@@ -406,15 +408,22 @@ impl cosmic::Application for AppModel {
                                 .notifications()
                                 .mark_all_as_read(None)
                                 .await
-                                .map_err(|e| e.to_string())
+                                .map_err(|e| e.to_string())?;
+                            Ok(None)
                         },
                         |result| cosmic::Action::App(Message::NotificationMarkedAsRead(result)),
                     );
                 }
             }
             Message::NotificationMarkedAsRead(result) => match result {
-                Ok(()) => {
+                Ok(None) => {
                     tasks.push(cosmic::task::message(Message::RefreshNotifications));
+                }
+                Ok(Some(notification_id)) => {
+                    self.notifications
+                        .iter_mut()
+                        .find(|n| n.id == notification_id)
+                        .map(|n| n.unread = !n.unread);
                 }
                 Err(error) => {
                     self.error_message = Some(format!("Failed to mark as read: {}", error));
@@ -438,6 +447,16 @@ impl AppModel {
         let reason = format_reason(&notification.reason);
 
         let header = widget::row()
+            .push_maybe(
+                notification.unread.then_some(
+                    widget::button::icon(cosmic::widget::icon::from_name(
+                        "mail-mark-read-symbolic",
+                    ))
+                    .padding(spacing().space_xxxs)
+                    .on_press(Message::MarkAsRead(notification.id.clone()))
+                    .class(cosmic::theme::Button::Text),
+                ),
+            )
             .push(
                 widget::column()
                     .push(
@@ -452,21 +471,9 @@ impl AppModel {
                             .as_ref()
                             .map(|name| widget::text(name).size(spacing().space_xs)),
                     )
-                    .width(250.)
-                    .spacing(2),
+                    .spacing(spacing().space_xxxs),
             )
-            .push(widget::horizontal_space().width(Length::Fill))
-            .push_maybe(
-                notification.unread.then_some(
-                    widget::button::icon(cosmic::widget::icon::from_name(
-                        "mail-mark-read-symbolic",
-                    ))
-                    .padding(spacing().space_xxxs)
-                    .on_press(Message::MarkAsRead(notification.id.clone()))
-                    .class(cosmic::theme::Button::Text),
-                ),
-            )
-            .spacing(8)
+            .spacing(spacing().space_xxs)
             .align_y(Alignment::Center);
 
         let time_ago = format_time_ago(&notification.updated_at);
